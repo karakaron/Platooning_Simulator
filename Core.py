@@ -1,5 +1,6 @@
 import carla
 from agents.navigation import controller, local_planner
+from collections import deque
 
 
 class Simulation(carla.Client):
@@ -43,7 +44,7 @@ class Simulation(carla.Client):
 class Platoon:
 	"""Represents a given platoon in the simulation. Contains a number of Vehicle objects."""
 	def __init__(self, simulation): 	# follower vehicles must be listed in correct order
-		self.lead_waypoints = []  # stores waypoints of the lead vehicle
+		self.lead_waypoints = deque()  # stores waypoints of the lead vehicle
 		self.world = simulation.world
 		self.map = simulation.map
 		self.lead_vehicle = None
@@ -57,6 +58,9 @@ class Platoon:
 		else:
 			raise IndexError("Index must be an integer.")
 
+	def __len__(self):
+		return len(self.follower_vehicles) + 1
+
 	def add_lead_vehicle(self, blueprint, spawn_point):
 		if self.lead_vehicle is None:
 			self.lead_vehicle = Vehicle(blueprint, spawn_point, self.world, 0)
@@ -69,25 +73,33 @@ class Platoon:
 	def add_follower_vehicle(self, blueprint, spawn_point, index=None):  # index: 0 is the lead vehicle
 		if index is None:
 			index = len(self.follower_vehicles)
+
 		_new_vehicle = Vehicle(blueprint, spawn_point, self.world, index)
 		self.follower_vehicles.insert(index, _new_vehicle)
+
 		for i, vehicle in enumerate(self.follower_vehicles):	 # adjust indices
 			vehicle.index = i + 1
+
 		return _new_vehicle
 
 	def take_measurements(self):
 		self.lead_vehicle.controller.set_speed(90)  # todo: allow custom control of lead vehicle
-		self.lead_waypoints.append(self.map.get_waypoint(self.lead_vehicle.get_location()))
+		lead_waypoint = self.map.get_waypoint(self.lead_vehicle.get_location())
+		self.lead_waypoints.append(lead_waypoint)
 		for vehicle in self.follower_vehicles:
 			vehicle.controller.compute_target_speed(vehicle.index)
+			# vehicle.controller.waypoints_to_track.append(lead_waypoint)
 
 	def run_pid_step(self):
+		# run pid step on the lead vehicle
 		try:
 			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
 			print(e)
+
+		# run pid step on the follower vehicles
 		for vehicle in self.follower_vehicles:
-			vehicle.control(lead_waypoints=self.lead_waypoints)
+			vehicle.control(self.lead_waypoints)
 
 	def split(self, first, last):  # new platoon is created from the vehicles between indices first and last
 		pass
@@ -139,6 +151,7 @@ class FollowerController:
 												   max_brake=0.3, max_throttle=0.75)
 		self.platoon = platoon
 		self.target_speed = 0
+		# self.waypoints_to_track = deque()
 
 	def compute_target_speed(self, index):
 		_args = [getattr(self.platoon[index + p[0]], *p[1:]) for p in self.parameters]
@@ -146,10 +159,16 @@ class FollowerController:
 
 	def compute_control(self, lead_waypoints, index):  # index is ego vehicle index
 		# find next waypoint
-		_to_remove = 0
+		_passed = 0
 		for i, wp in enumerate(lead_waypoints):
-			if self.vehicle.get_location().distance(wp.transform.location) < 2:
-				_to_remove = max(_to_remove, i + 1)  # warning: this causes problems in a loop-like trajectory
-		del lead_waypoints[0:_to_remove]
-		return self.pid.run_step(self.target_speed, lead_waypoints[0])
+			if self.vehicle.get_location().distance(wp.transform.location) < 4:
+				_passed = max(_passed, i + 1)  # warning: this causes problems in a loop-like trajectory
+
+		# last vehicle removes waypoints that it passes
+		if index == len(self.platoon) - 1:
+			for i in range(_passed):
+				lead_waypoints.popleft()
+			_passed = 0
+
+		return self.pid.run_step(self.target_speed, lead_waypoints[_passed])
 
