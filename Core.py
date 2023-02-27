@@ -65,8 +65,8 @@ class Platoon:
 	def add_lead_vehicle(self, blueprint, spawn_point):
 		if self.lead_vehicle is None:
 			self.lead_vehicle = Vehicle(blueprint, spawn_point, self.world, 0)
-			self.lead_vehicle.attach_controller(local_planner.LocalPlanner(self.lead_vehicle,
-							{"longitudinal_control_dict": {'K_P': 2/5, 'K_I': 0.26/2, 'K_D': 0.26/3, 'dt': 0.01}}))
+			# self.lead_vehicle.attach_controller(local_planner.LocalPlanner(self.lead_vehicle,
+			# 				{"longitudinal_control_dict": {'K_P': 2/5, 'K_I': 0.26/2, 'K_D': 0.26/3, 'dt': 0.01}}))
 			return self.lead_vehicle
 		else:
 			raise Exception("This platoon already has a lead vehicle.")
@@ -84,7 +84,6 @@ class Platoon:
 		return _new_vehicle
 
 	def take_measurements(self):
-		self.lead_vehicle.controller.set_speed(90)  # todo: allow custom control of lead vehicle
 		lead_waypoint = self.map.get_waypoint(self.lead_vehicle.get_location())
 		self.lead_waypoints.append(lead_waypoint)
 		for vehicle in self.follower_vehicles:
@@ -100,7 +99,10 @@ class Platoon:
 
 		# run pid step on the follower vehicles
 		for vehicle in self.follower_vehicles:
-			vehicle.control(self.lead_waypoints)
+			try:
+				vehicle.control(self.lead_waypoints)
+			except Exception as e:
+				print(e)
 
 	def split(self, first, last):  # new platoon is created from the vehicles between indices first and last
 		pass
