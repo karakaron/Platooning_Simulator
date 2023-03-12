@@ -1,4 +1,5 @@
 import carla
+import numpy as np
 from agents.navigation import controller, local_planner
 from collections import deque
 
@@ -10,8 +11,6 @@ class Simulation(carla.Client):
 		super().__init__(host, port)
 		self.set_timeout(10000)
 		self.world = self.load_world(world)
-		self.map = self.world.get_map()
-		self.spectator = self.world.get_spectator()
 
 		_settings = self.world.get_settings()
 		_settings.no_rendering_mode = not render
@@ -21,10 +20,14 @@ class Simulation(carla.Client):
 			_settings.max_substep_delta_time = 0.01
 			_settings.max_substeps = round(dt/0.01) + 1
 			_settings.synchronous_mode = True
+			self.world.apply_settings(_settings)
+			self.world.tick()
 		if world == 'Town11':
 			_settings.actor_active_distance = 2000
-		self.world.apply_settings(_settings)
+			self.world.apply_settings(_settings)
 
+		self.map = self.world.get_map()
+		self.spectator = self.world.get_spectator()
 		self.platoons = []
 
 	def add_platoon(self, platoon):
@@ -44,7 +47,7 @@ class Simulation(carla.Client):
 
 class Platoon:
 	"""Represents a given platoon in the simulation. Contains a number of Vehicle objects."""
-	def __init__(self, simulation): 	# follower vehicles must be listed in correct order
+	def __init__(self, simulation):
 		self.lead_waypoints = deque()  # stores waypoints of the lead vehicle
 		self.world = simulation.world
 		self.map = simulation.map
@@ -135,6 +138,28 @@ class Vehicle:
 
 	def __getattr__(self, attr):  # makes the underlying carla Actor instance available
 		return getattr(self._carla_vehicle, attr)
+
+	@property
+	def speed(self):  # norm of vehicle velocity in m/s
+		v = self._carla_vehicle.get_velocity()
+		return np.sqrt(v.x**2 + v.y**2 + v.z**2)
+
+	@property
+	def acceleration(self):  # signed norm of acceleration in m/s^2
+		a = self._carla_vehicle.get_acceleration()
+		v = self._carla_vehicle.get_velocity()
+		sign = 1 if a.x * v.x + a.y * v.y >= 0 else -1
+		return sign*np.sqrt(a.x**2 + a.y**2 + a.z**2)
+
+	@property
+	def heading(self):
+		transform = self._carla_vehicle.get_transform()
+		return transform.rotation.yaw
+
+	def distance_to(self, other):  # distance to other vehicle
+		location = self._carla_vehicle.get_location()
+		other_location = other.get_location()
+		return location.distance(other_location)
 
 	def control(self, lead_waypoints):
 		self.apply_control(self.controller.compute_control(lead_waypoints, self.index))

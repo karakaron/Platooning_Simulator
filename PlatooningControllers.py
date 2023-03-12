@@ -9,10 +9,14 @@ class FollowerController:
     """Controller for follower vehicles. Desired speed is given by a user-defined function at every time step.
     Spatial trajectory is inherited from the lead vehicle"""
 
-    def __init__(self, vehicle, control_function, parameters, platoon):
+    def __init__(self, vehicle, control_function, platoon, handbrake_on_stop=False, parameters=None, dependencies=None):
         # parameters: ORDERED list of 2(or more)-tuples of vehicle index and attribute(s), index 0 is ego
+        # alternative: dependencies: a list of indices with 0 = ego
         self.control_function = control_function
         self.parameters = parameters
+        self.dependencies = dependencies
+        if self.dependencies is not None and self.parameters is not None:
+            raise Exception("Only one of parameters / dependencies should be defined.")
         self.vehicle = vehicle
         self.pid = controller.VehiclePIDController(self.vehicle,
                                                    args_lateral={'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01},
@@ -21,11 +25,15 @@ class FollowerController:
                                                    max_brake=0.3, max_throttle=0.75)
         self.platoon = platoon
         self.target_speed = 0
+        self.handbrake_on_stop = handbrake_on_stop
 
     # self.waypoints_to_track = deque()
 
     def compute_target_speed(self, index):
-        _args = [getattr(self.platoon[index + p[0]], *p[1:]) for p in self.parameters]
+        if self.parameters is not None:
+            _args = [getattr(self.platoon[index + p[0]], *p[1:]) for p in self.parameters]
+        else:
+            _args = [self.platoon[index + d] for d in self.dependencies]
         self.target_speed = self.control_function(*_args)
 
     def compute_control(self, lead_waypoints, index):  # index is ego vehicle index
@@ -40,6 +48,13 @@ class FollowerController:
             for i in range(_passed):
                 lead_waypoints.popleft()
             _passed = 0
+
+        if self.handbrake_on_stop:
+            v = self.vehicle.get_velocity()
+            if v.x**2 + v.y**2 + v.z**2 < 0.1 and self.target_speed < 0.1:
+                return carla.VehicleControl(throttle=0, hand_brake=True, brake=1)
+            else:
+                self.vehicle.apply_control(carla.VehicleControl(hand_brake=False))
 
         return self.pid.run_step(self.target_speed, lead_waypoints[_passed])  # todo: handle end of route
 
@@ -77,6 +92,7 @@ class LeadNavigator:
             wpt = min(next_wpts, key=lambda x: np.abs(x.transform.rotation.yaw-driving_direction) % 360)
         else:
             return "No waypoints found"
+
         if wpt.is_junction:
             junction_wpt_pairs = wpt.get_junction().get_waypoints(carla.LaneType.Driving)
             junction_wpts_1 = [w[0] for w in junction_wpt_pairs]
@@ -87,8 +103,6 @@ class LeadNavigator:
 
         self.waypoints_ahead.append(wpt)
         draw_waypoints(self.world, self.waypoints_ahead)
-        print(len(self.waypoints_ahead))
-        # find waypoints after lane ends
 
     def find_next_waypoint(self):
         _passed = 0
