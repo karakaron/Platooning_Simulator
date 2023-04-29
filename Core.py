@@ -1,7 +1,7 @@
 import carla
 import numpy as np
-from agents.navigation import controller, local_planner
 from collections import deque
+from copy import deepcopy, copy
 
 
 class Simulation(carla.Client):
@@ -53,14 +53,11 @@ class Platoon:
 		self.map = simulation.map
 		self.lead_vehicle = None
 		self.follower_vehicles = []
+		self.simulation = simulation
 
 	def __getitem__(self, item):
-		if item == 0:
-			return self.lead_vehicle
-		elif isinstance(item, int):
-			return self.follower_vehicles[item-1]
-		else:
-			raise IndexError("Index must be an integer.")
+		all_vehicles = [self.lead_vehicle] + self.follower_vehicles
+		return all_vehicles[item]
 
 	def __len__(self):
 		return len(self.follower_vehicles) + 1
@@ -68,21 +65,18 @@ class Platoon:
 	def add_lead_vehicle(self, blueprint, spawn_point):
 		if self.lead_vehicle is None:
 			self.lead_vehicle = Vehicle(blueprint, spawn_point, self.world, 0)
-			# self.lead_vehicle.attach_controller(local_planner.LocalPlanner(self.lead_vehicle,
-			# 				{"longitudinal_control_dict": {'K_P': 2/5, 'K_I': 0.26/2, 'K_D': 0.26/3, 'dt': 0.01}}))
 			return self.lead_vehicle
 		else:
 			raise Exception("This platoon already has a lead vehicle.")
 
-	def add_follower_vehicle(self, blueprint, spawn_point, index=None):  # index: 0 is the lead vehicle
+	def add_follower_vehicle(self, blueprint, spawn_point, index=None, history_depth=0, history_data=None):  # index: 0 is the lead vehicle
 		if index is None:
 			index = len(self.follower_vehicles)
 
-		_new_vehicle = Vehicle(blueprint, spawn_point, self.world, index)
+		_new_vehicle = Vehicle(blueprint, spawn_point, self.world, index, history_depth, history_data)
 		self.follower_vehicles.insert(index, _new_vehicle)
 
-		for i, vehicle in enumerate(self.follower_vehicles):	 # adjust indices
-			vehicle.index = i + 1
+		self.reindex()
 
 		return _new_vehicle
 
@@ -98,22 +92,49 @@ class Platoon:
 		try:
 			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
-			print(e)
+			print(e, "lead vehicle")
 
 		# run pid step on the follower vehicles
 		for vehicle in self.follower_vehicles:
 			try:
 				vehicle.control(self.lead_waypoints)
+				vehicle.update_history()
 			except Exception as e:
-				print(e)
+				print(e, "follower vehicle")
+
+	def reindex(self):
+		for i, vehicle in enumerate(self.follower_vehicles):	 # adjust indices
+			vehicle.index = i + 1
 
 	def split(self, first, last):  # new platoon is created from the vehicles between indices first and last
-		pass
-		# new_platoon = Platoon(follower_vehicles=self.follower_vehicles[first+1:last], lead_vehicle=self.follower_vehicles[first])
-		# del self.follower_vehicles[first:last]
-		# if first == 0:
-		# 	self.lead_vehicle = self.follower_vehicles[0]
-		# return new_platoon
+		new_platoon = Platoon(self.simulation)
+		new_lead_controller = copy(self.lead_vehicle.controller)
+		vehicles_to_split = self[first: last + 1 - (first == 0)]
+
+		del self.follower_vehicles[first-1: last - (first == 0)]
+
+		if first == 0:
+			own_new_lead_vehicle = self.follower_vehicles.pop(last)
+			self.lead_vehicle.controller.vehicle = own_new_lead_vehicle
+			own_new_lead_vehicle.attach_controller(self.lead_vehicle.controller)
+
+		for vehicle in vehicles_to_split[1:]:
+			vehicle.controller.platoon = new_platoon
+
+		new_lead_controller.vehicle = vehicles_to_split[0]
+		vehicles_to_split[0].attach_controller(new_lead_controller)
+
+		new_platoon.lead_vehicle = vehicles_to_split[0]
+		new_platoon.follower_vehicles = vehicles_to_split[1:]
+		new_platoon.reindex()
+
+		new_lead_controller.reset_waypoints()
+
+		self.reindex()
+		self.simulation.add_platoon(new_platoon)
+		# new_platoon.take_measurements()
+
+		return new_platoon, new_lead_controller
 
 	def merge(self, other):
 		pass
@@ -122,13 +143,20 @@ class Platoon:
 class Vehicle:
 	"""Represents a vehicle in the simulation. Spawns a carla vehicle at init and has additional features.
 	The underlying carla Actor instance can be accessed directly."""
-	def __init__(self, blueprint, spawn_point, world, index):
+	def __init__(self, blueprint, spawn_point, world, index, history_depth=0, history_data=None):
 		self.blueprint = blueprint
 		self.spawn_point = spawn_point
 		self.world = world
 		self._carla_vehicle = world.spawn_actor(blueprint, spawn_point)
 		self.index = index
 		self.controller = None
+		self.history = VehicleHistory(history_depth)
+		if history_data is None:
+			self.history_data = []
+		else:
+			self.history_data = history_data
+			for attribute in self.history_data:
+				self.history.add_attribute(attribute)
 
 	def attach_controller(self, controller):
 		self.controller = controller
@@ -163,4 +191,20 @@ class Vehicle:
 
 	def control(self, lead_waypoints):
 		self.apply_control(self.controller.compute_control(lead_waypoints, self.index))
+
+	def update_history(self):
+		for attribute in self.history_data:
+			self.history[attribute] = getattr(self, attribute)
+		# todo: this is limited to variables, cannot access method return values
+
+
+class VehicleHistory:
+	def __init__(self, depth=0):
+		self.depth = depth
+
+	def add_attribute(self, attribute_name):
+		setattr(self, attribute_name, deque(maxlen=self.depth))
+
+	def __setitem__(self, key, value):
+		getattr(self, key).append(value)
 

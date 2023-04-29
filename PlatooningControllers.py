@@ -9,7 +9,8 @@ class FollowerController:
     """Controller for follower vehicles. Desired speed is given by a user-defined function at every time step.
     Spatial trajectory is inherited from the lead vehicle"""
 
-    def __init__(self, vehicle, control_function, platoon, handbrake_on_stop=False, parameters=None, dependencies=None):
+    def __init__(self, vehicle, control_function, platoon, handbrake_on_stop=False, parameters=None, dependencies=None,
+                 pid_args_lateral=None, pid_args_longitudinal=None, max_brake=0.3, max_throttle=1):
         # parameters: ORDERED list of 2(or more)-tuples of vehicle index and attribute(s), index 0 is ego
         # alternative: dependencies: a list of indices with 0 = ego
         self.control_function = control_function
@@ -17,12 +18,18 @@ class FollowerController:
         self.dependencies = dependencies
         if self.dependencies is not None and self.parameters is not None:
             raise Exception("Only one of parameters / dependencies should be defined.")
+
+        if pid_args_lateral is None:
+            pid_args_lateral = {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01}
+
+        if pid_args_longitudinal is None:
+            pid_args_longitudinal = {'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3, 'dt': 0.01}
+
         self.vehicle = vehicle
         self.pid = controller.VehiclePIDController(self.vehicle,
-                                                   args_lateral={'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01},
-                                                   args_longitudinal={'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3,
-                                                                      'dt': 0.01},
-                                                   max_brake=0.3, max_throttle=0.75)
+                                                   args_lateral=pid_args_lateral,
+                                                   args_longitudinal=pid_args_longitudinal,
+                                                   max_brake=max_brake, max_throttle=max_throttle)
         self.platoon = platoon
         self.target_speed = 0
         self.handbrake_on_stop = handbrake_on_stop
@@ -61,19 +68,46 @@ class FollowerController:
 
 class LeadNavigator:
     """Navigator for the lead vehicle."""
-    def __init__(self, vehicle, initial_speed=0):
-        self.vehicle = vehicle
+    def __init__(self, vehicle, initial_speed=0, pid_args_lateral=None, pid_args_longitudinal=None,
+                 max_brake=0.3, max_throttle=1):
+        self._vehicle = vehicle
         self.target_speed = initial_speed
-        self.pid = controller.VehiclePIDController(self.vehicle, args_lateral={'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01},
-                                                   args_longitudinal={'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3,
-                                                                      'dt': 0.01},
-                                                   max_brake=0.3, max_throttle=0.75)
-        self.world = self.vehicle.get_world()
+        self.pid_args_lateral = pid_args_lateral
+        self.pid_args_longitudinal = pid_args_longitudinal
+        self.max_brake = max_brake
+        self.max_throttle = max_throttle
+
+        if self.pid_args_lateral is None:
+            self.pid_args_lateral = {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01}
+
+        if self.pid_args_longitudinal is None:
+            self.pid_args_longitudinal = {'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3, 'dt': 0.01}
+
+        self.pid = controller.VehiclePIDController(self._vehicle, args_lateral=self.pid_args_lateral,
+                                                   args_longitudinal=self.pid_args_longitudinal,
+                                                   max_brake=self.max_brake, max_throttle=self.max_throttle)
+        self.world = self._vehicle.get_world()
         self.map = self.world.get_map()
-        self.target_waypoint = self.map.get_waypoint(self.vehicle.get_location())
+        self.target_waypoint = None
+        self.waypoints_ahead = deque()
+        self.reset_waypoints()
+
+    def reset_waypoints(self):
+        self.target_waypoint = self.map.get_waypoint(self._vehicle.get_location())
         self.waypoints_ahead = deque()
         self.waypoints_ahead.append(self.target_waypoint)
         self.find_waypoints_ahead()
+
+    @property
+    def vehicle(self):
+        return self._vehicle
+
+    @vehicle.setter
+    def vehicle(self, vehicle):
+        self._vehicle = vehicle
+        self.pid = controller.VehiclePIDController(self._vehicle, args_lateral=self.pid_args_lateral,
+                                                   args_longitudinal=self.pid_args_longitudinal,
+                                                   max_brake=self.max_brake, max_throttle=self.max_throttle)
 
     def set_target_speed(self, target_speed):
         self.target_speed = target_speed
@@ -107,7 +141,7 @@ class LeadNavigator:
     def find_next_waypoint(self):
         _passed = 0
         for i, wp in enumerate(self.waypoints_ahead):
-            if self.vehicle.get_location().distance(wp.transform.location) < 5:
+            if self._vehicle.get_location().distance(wp.transform.location) < 5:
                 _passed = max(_passed, i + 1)  # warning: this causes problems in a loop-like trajectory
 
         for i in range(_passed):
