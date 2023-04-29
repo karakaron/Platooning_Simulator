@@ -16,25 +16,42 @@ class FollowerController:
         self.control_function = control_function
         self.parameters = parameters
         self.dependencies = dependencies
+        self.pid_args_lateral = pid_args_lateral
+        self.pid_args_longitudinal = pid_args_longitudinal
+        self.max_brake = max_brake
+        self.max_throttle = max_throttle
         if self.dependencies is not None and self.parameters is not None:
             raise Exception("Only one of parameters / dependencies should be defined.")
 
-        if pid_args_lateral is None:
-            pid_args_lateral = {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01}
+        if self.pid_args_lateral is None:
+            self.pid_args_lateral = {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.01}
 
-        if pid_args_longitudinal is None:
-            pid_args_longitudinal = {'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3, 'dt': 0.01}
+        if self.pid_args_longitudinal is None:
+            self.pid_args_longitudinal = {'K_P': 2 / 5, 'K_I': 0.26 / 2, 'K_D': 0.26 / 3, 'dt': 0.01}
 
-        self.vehicle = vehicle
-        self.pid = controller.VehiclePIDController(self.vehicle,
-                                                   args_lateral=pid_args_lateral,
-                                                   args_longitudinal=pid_args_longitudinal,
-                                                   max_brake=max_brake, max_throttle=max_throttle)
+        self._vehicle = vehicle
+        self.pid = controller.VehiclePIDController(self._vehicle,
+                                                   args_lateral=self.pid_args_lateral,
+                                                   args_longitudinal=self.pid_args_longitudinal,
+                                                   max_brake=self.max_brake, max_throttle=self.max_throttle)
         self.platoon = platoon
         self.target_speed = 0
         self.handbrake_on_stop = handbrake_on_stop
 
     # self.waypoints_to_track = deque()
+
+    @property
+    def vehicle(self):
+        return self._vehicle
+
+    @vehicle.setter
+    def vehicle(self, vehicle):
+        self._vehicle = vehicle
+        self.pid = controller.VehiclePIDController(self._vehicle,
+                                                   args_lateral=self.pid_args_lateral,
+                                                   args_longitudinal=self.pid_args_longitudinal,
+                                                   max_brake=self.max_brake, max_throttle=self.max_throttle)
+        # pid needs to be redefined as vehicle cannot be changed in VehiclePIDController
 
     def compute_target_speed(self, index):
         if self.parameters is not None:
@@ -47,7 +64,7 @@ class FollowerController:
         # find next waypoint
         _passed = 0
         for i, wp in enumerate(lead_waypoints):
-            if self.vehicle.get_location().distance(wp.transform.location) < 5:
+            if self._vehicle.get_location().distance(wp.transform.location) < 5:
                 _passed = max(_passed, i + 1)  # warning: this causes problems in a loop-like trajectory
 
         # last vehicle removes waypoints that it passes
@@ -57,11 +74,11 @@ class FollowerController:
             _passed = 0
 
         if self.handbrake_on_stop:
-            v = self.vehicle.get_velocity()
+            v = self._vehicle.get_velocity()
             if v.x**2 + v.y**2 + v.z**2 < 0.1 and self.target_speed < 0.1:
                 return carla.VehicleControl(throttle=0, hand_brake=True, brake=1)
             else:
-                self.vehicle.apply_control(carla.VehicleControl(hand_brake=False))
+                self._vehicle.apply_control(carla.VehicleControl(hand_brake=False))
 
         return self.pid.run_step(self.target_speed, lead_waypoints[_passed])  # todo: handle end of route
 
@@ -108,6 +125,7 @@ class LeadNavigator:
         self.pid = controller.VehiclePIDController(self._vehicle, args_lateral=self.pid_args_lateral,
                                                    args_longitudinal=self.pid_args_longitudinal,
                                                    max_brake=self.max_brake, max_throttle=self.max_throttle)
+        # pid needs to be redefined as vehicle cannot be changed in VehiclePIDController
 
     def set_target_speed(self, target_speed):
         self.target_speed = target_speed

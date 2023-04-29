@@ -1,7 +1,8 @@
 import carla
 import numpy as np
 from collections import deque
-from copy import deepcopy, copy
+from copy import copy
+import warnings
 
 
 class Simulation(carla.Client):
@@ -57,7 +58,11 @@ class Platoon:
 
 	def __getitem__(self, item):
 		all_vehicles = [self.lead_vehicle] + self.follower_vehicles
-		return all_vehicles[item]
+		try:
+			return all_vehicles[item]
+		except IndexError as e:
+			print(all_vehicles, item)
+			raise e
 
 	def __len__(self):
 		return len(self.follower_vehicles) + 1
@@ -92,7 +97,7 @@ class Platoon:
 		try:
 			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
-			print(e, "lead vehicle")
+			warnings.warn(f"{e}, lead vehicle")
 
 		# run pid step on the follower vehicles
 		for vehicle in self.follower_vehicles:
@@ -100,7 +105,7 @@ class Platoon:
 				vehicle.control(self.lead_waypoints)
 				vehicle.update_history()
 			except Exception as e:
-				print(e, "follower vehicle")
+				warnings.warn(f"{e}, follower vehicle {vehicle.index}")
 
 	def reindex(self):
 		for i, vehicle in enumerate(self.follower_vehicles):	 # adjust indices
@@ -136,8 +141,23 @@ class Platoon:
 
 		return new_platoon, new_lead_controller
 
-	def merge(self, other):
-		pass
+	def merge(self, other):  # merges other platoon into self (at the end)
+		other_follower_controller = copy(other[1].controller)  # copying first followers controller to assign to lead
+		other_follower_controller.vehicle = other[0]
+		other[0].attach_controller(other_follower_controller)
+		self.follower_vehicles.append(other[0])
+		self.follower_vehicles.extend(other.follower_vehicles)
+		self.reindex()
+
+		# other.lead_waypoints.reverse()  # extendleft reverses order
+		# self.lead_waypoints.extendleft(other.lead_waypoints)  # todo: add lead_waypoints from other platoon
+
+		other_follower_controller.platoon = self
+		for vehicle in other.follower_vehicles:
+			vehicle.controller.platoon = self
+
+		self.simulation.platoons.remove(other)
+		del other
 
 
 class Vehicle:
@@ -166,6 +186,9 @@ class Vehicle:
 
 	def __getattr__(self, attr):  # makes the underlying carla Actor instance available
 		return getattr(self._carla_vehicle, attr)
+
+	def __str__(self):
+		return f"Follower vehicle {self.index}"
 
 	@property
 	def speed(self):  # norm of vehicle velocity in m/s
