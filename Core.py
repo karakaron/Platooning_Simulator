@@ -7,7 +7,7 @@ import warnings
 
 class Simulation(carla.Client):
 	"""Top level simulation object."""
-	def __init__(self, host='localhost', port=2000, world="Town06", render=True, synchronous=False, dt=0.01):
+	def __init__(self, host='localhost', port=2000, world="Town06", render=True, synchronous=True, dt=0.01):
 		# carla setup
 		super().__init__(host, port)
 		self.set_timeout(10000)
@@ -55,6 +55,7 @@ class Platoon:
 		self.lead_vehicle = None
 		self.follower_vehicles = []
 		self.simulation = simulation
+		self.simulation.add_platoon(self)
 
 	def __getitem__(self, item):
 		all_vehicles = [self.lead_vehicle] + self.follower_vehicles
@@ -95,7 +96,8 @@ class Platoon:
 	def run_pid_step(self):
 		# run pid step on the lead vehicle
 		try:
-			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
+			if not self.lead_vehicle.autopilot:
+				self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
 			warnings.warn(f"{e}, lead vehicle")
 
