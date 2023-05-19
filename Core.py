@@ -42,8 +42,22 @@ class Simulation(carla.Client):
 				platoon.take_measurements()
 			platoon.run_pid_step()
 
-	def run(self):
+	def run(self, steps, step_callback):
+		mode = step_callback()		# should return "control" or "sample"
+		self.run_step(mode)
+		self.world.tick()
 		pass
+
+	def get_vehicle_blueprints(self, mark_as_hero=True):
+		vehicle_blueprints = self.world.get_blueprint_library().filter('*vehicle*')
+		if mark_as_hero:
+			vehicle_blueprints_hero = []
+			for bp in vehicle_blueprints:
+				bp.set_attribute('role_name', 'hero')
+				vehicle_blueprints_hero.append(bp)
+			return vehicle_blueprints_hero
+		else:
+			return vehicle_blueprints
 
 
 class Platoon:
@@ -96,8 +110,8 @@ class Platoon:
 	def run_pid_step(self):
 		# run pid step on the lead vehicle
 		try:
-			if not self.lead_vehicle.autopilot:
-				self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
+			# if not self.lead_vehicle.autopilot: todo: do not run this if lead vehicle is controlled by autopilot
+			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
 			warnings.warn(f"{e}, lead vehicle")
 
@@ -114,6 +128,7 @@ class Platoon:
 			vehicle.index = i + 1
 
 	def split(self, first, last):  # new platoon is created from the vehicles between indices first and last
+		# todo: make it compatible with autopilot
 		new_platoon = Platoon(self.simulation)
 		new_lead_controller = copy(self.lead_vehicle.controller)
 		vehicles_to_split = self[first: last + 1 - (first == 0)]
