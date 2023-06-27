@@ -6,9 +6,24 @@ import warnings
 
 
 class Simulation(carla.Client):
-	"""Top level simulation object."""
-	def __init__(self, host='localhost', port=2000, world="Town06", render=True, synchronous=True, dt=0.01):
-		# carla setup
+	"""
+	Top level simulation class that handles the connection to Carla
+	and executes steps of the simulation.
+	"""
+	def __init__(self, host='localhost', port=2000, world="Town06", large_map=True, render=True, synchronous=True, dt=0.01,
+				active_distance=2000):
+		"""
+		:param host: Carla server host
+		:param port: Carla server port
+		:param world: The chosen Carla world
+		:param large_map: True if using a large map, False otherwise
+		:param render: Turns rendering on (True) or off (False)
+		:param synchronous: Turns synchronous mode on (True) or off (False).
+		Synchronous mode is highly recommended
+		:param dt: length of a simulation time step
+		:param active_distance: the distance (from "hero" vehicles) within which vehicles are
+		simulated when using a large map. All vehicles are marked as "hero" here by default.
+		"""
 		super().__init__(host, port)
 		self.set_timeout(10000)
 		self.world = self.load_world(world)
@@ -23,8 +38,8 @@ class Simulation(carla.Client):
 			_settings.synchronous_mode = True
 			self.world.apply_settings(_settings)
 			self.world.tick()
-		if world == 'Town11':
-			_settings.actor_active_distance = 2000
+		if large_map:
+			_settings.actor_active_distance = active_distance
 			self.world.apply_settings(_settings)
 
 		self.map = self.world.get_map()
@@ -32,37 +47,63 @@ class Simulation(carla.Client):
 		self.platoons = []
 
 	def add_platoon(self, platoon):
+		"""Add a new platoon. A Platoon object automatically calls
+		this on initialisation.
+		:param platoon: the Platoon instance to be added"""
 		self.platoons.append(platoon)
 
 	def run_step(self, mode="control"):
-		# self.world.tick()
-		# mode: either "control" or "sample"; determines if new target speed is computed or only pid iteration is called
+		"""
+		Run one step of the simulation.
+		:param mode: "control" or "sample", low-level PID control is run
+		in both cases, new control inputs are only computed if "sample" is passed
+		"""
 		for platoon in self.platoons:
 			if mode == "sample":
 				platoon.take_measurements()
 			platoon.run_pid_step()
 
-	def run(self, steps, step_callback):
-		mode = step_callback()		# should return "control" or "sample"
-		self.run_step(mode)
-		self.world.tick()
-		pass
+	def run(self, steps,  step_callback, control_steps_per_sampling=10):
+		"""
+		Run an entire simulation. Alternatively, a loo can be
+		used that directly calls run_step in each iteration.
+		:param steps: the total number of simulation steps
+		:param step_callback: a callback function to be called
+		in each step
+		:param control_steps_per_sampling: the number of PID iterations
+		per new control input computation by the platooning controllers
+		"""
+		for step in range(steps):
+			step_callback()
+			self.run_step("sample" if step % control_steps_per_sampling == 0 else "control")
+			self.world.tick()
 
-	def get_vehicle_blueprints(self, mark_as_hero=True):
+	def get_vehicle_blueprints(self):
+		"""
+		:return: Return all available Carla vehicle blueprints
+		"""
 		vehicle_blueprints = self.world.get_blueprint_library().filter('*vehicle*')
-		if mark_as_hero:
-			vehicle_blueprints_hero = []
-			for bp in vehicle_blueprints:
-				bp.set_attribute('role_name', 'hero')
-				vehicle_blueprints_hero.append(bp)
-			return vehicle_blueprints_hero
-		else:
-			return vehicle_blueprints
+		return vehicle_blueprints
+
+	def release_synchronous(self):
+		"""
+		Turn off synchronous mode to avoid blocking
+		the simulation server.
+		"""
+		_settings = self.world.get_settings()
+		_settings.synchronous_mode = False
+		self.world.apply_settings(_settings)
 
 
 class Platoon:
-	"""Represents a given platoon in the simulation. Contains a number of Vehicle objects."""
+	"""
+	Platoon represents a simulated vehicle platoon. It contains
+	a lead vehicle and a number of follower vehicles.
+	"""
 	def __init__(self, simulation):
+		"""
+		:param simulation: the Simulation instance to be used.
+		"""
 		self.lead_waypoints = deque()  # stores waypoints of the lead vehicle
 		self.world = simulation.world
 		self.map = simulation.map
@@ -79,39 +120,62 @@ class Platoon:
 			print(all_vehicles, item)
 			raise e
 
+	def __iter__(self):
+		for vehicle in [self.lead_vehicle] + self.follower_vehicles:
+			yield vehicle
+
 	def __len__(self):
 		return len(self.follower_vehicles) + 1
 
 	def add_lead_vehicle(self, blueprint, spawn_point):
+		"""
+		Initialise the platoon's lead vehicle.
+		:param blueprint: carla.ActorBlueprint for the new vehicle
+		:param spawn_point: carla.Transform where the new vehicle is spawned
+		"""
 		if self.lead_vehicle is None:
 			self.lead_vehicle = Vehicle(blueprint, spawn_point, self.world, 0)
 			return self.lead_vehicle
 		else:
 			raise Exception("This platoon already has a lead vehicle.")
 
-	def add_follower_vehicle(self, blueprint, spawn_point, index=None, history_depth=0, history_data=None):  # index: 0 is the lead vehicle
+	def add_follower_vehicle(self, blueprint, spawn_point, index=None):
+		"""
+		Initialise a new follower vehicle.
+		:param blueprint: carla.ActorBlueprint for the new vehicle
+		:param spawn_point: carla.Transform where the new vehicle is spawned
+		:param index: vehicle index in the platoon, 0 is the lead vehicle
+		"""
 		if index is None:
 			index = len(self.follower_vehicles)
 
-		_new_vehicle = Vehicle(blueprint, spawn_point, self.world, index, history_depth, history_data)
+		_new_vehicle = Vehicle(blueprint, spawn_point, self.world, index)
 		self.follower_vehicles.insert(index, _new_vehicle)
 
 		self.reindex()
-
 		return _new_vehicle
 
+	def store_follower_waypoints(self):
+		"""This can be used to avoid vehicles further back cutting
+		the corner if the lead vehicle turns right after spawning"""
+		for vehicle in self.follower_vehicles:
+			self.lead_waypoints.append(self.map.get_waypoint(vehicle.get_location()))
+
 	def take_measurements(self):
+		"""Take measurements and compute new reference velocities
+		by the platooning controllers of follower vehicles."""
 		lead_waypoint = self.map.get_waypoint(self.lead_vehicle.get_location())
 		self.lead_waypoints.append(lead_waypoint)
 		for vehicle in self.follower_vehicles:
 			vehicle.controller.compute_target_speed(vehicle.index)
-			# vehicle.controller.waypoints_to_track.append(lead_waypoint)
 
 	def run_pid_step(self):
+		"""Run one step of PID control on each vehicle using their
+		own controllers."""
 		# run pid step on the lead vehicle
 		try:
-			# if not self.lead_vehicle.autopilot: todo: do not run this if lead vehicle is controlled by autopilot
-			self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
+			if not self.lead_vehicle.autopilot:
+				self.lead_vehicle.apply_control(self.lead_vehicle.controller.run_step())
 		except Exception as e:
 			warnings.warn(f"{e}, lead vehicle")
 
@@ -124,33 +188,52 @@ class Platoon:
 				warnings.warn(f"{e}, follower vehicle {vehicle.index}")
 
 	def reindex(self):
-		for i, vehicle in enumerate(self.follower_vehicles):	 # adjust indices
+		"""Adjust the index attributes of the Vehicle instances
+		in the platoon to match the actual order."""
+		for i, vehicle in enumerate(self.follower_vehicles):
 			vehicle.index = i + 1
 
-	def split(self, first, last):  # new platoon is created from the vehicles between indices first and last
-		# todo: make it compatible with autopilot
+	def split(self, first, last, tm_port=None):
+		"""
+		Split the platoon into two. A new Platoon instance
+		is created from the vehicles between indices first and last.
+		If the lead vehicle is on autopilot, the new platoon's
+		lead vehicle will be as well.
+		:param first: first vehicle of the new platoon
+		:param last: last vehicle of the new platoon
+		:returns: the new Platoon and the controller of its lead vehicle
+		(if it is not on autopilot).
+		"""
+		if self.lead_vehicle.autopilot and tm_port is None:
+			raise Exception("Cannot assign autopilot to the new platoon since tm_port is unspecified.")
+
 		new_platoon = Platoon(self.simulation)
-		new_lead_controller = copy(self.lead_vehicle.controller)
 		vehicles_to_split = self[first: last + 1 - (first == 0)]
+		new_lead_controller = copy(self.lead_vehicle.controller)  # None if lead vehicle is on autopilot
 
 		del self.follower_vehicles[first-1: last - (first == 0)]
 
 		if first == 0:
 			own_new_lead_vehicle = self.follower_vehicles.pop(last)
 			self.lead_vehicle.controller.vehicle = own_new_lead_vehicle
-			own_new_lead_vehicle.attach_controller(self.lead_vehicle.controller)
+			if self.lead_vehicle.autopilot:
+				own_new_lead_vehicle.set_autopilot(True, tm_port)
+			else:
+				own_new_lead_vehicle.attach_controller(self.lead_vehicle.controller)
 
 		for vehicle in vehicles_to_split[1:]:
 			vehicle.controller.platoon = new_platoon
 
-		new_lead_controller.vehicle = vehicles_to_split[0]
-		vehicles_to_split[0].attach_controller(new_lead_controller)
+		if self.lead_vehicle.autopilot:
+			vehicles_to_split[0].set_autopilot(True, tm_port)
+		else:
+			new_lead_controller.vehicle = vehicles_to_split[0]
+			vehicles_to_split[0].attach_controller(new_lead_controller)
+			new_lead_controller.reset_waypoints()
 
 		new_platoon.lead_vehicle = vehicles_to_split[0]
 		new_platoon.follower_vehicles = vehicles_to_split[1:]
 		new_platoon.reindex()
-
-		new_lead_controller.reset_waypoints()
 
 		self.reindex()
 		self.simulation.add_platoon(new_platoon)
@@ -158,8 +241,19 @@ class Platoon:
 
 		return new_platoon, new_lead_controller
 
-	def merge(self, other):  # merges other platoon into self (at the end)
+	def merge(self, other, tm_port=None):
+		"""Merge another Platoon into self at the end. Either both
+		or neither of the lead vehicles should be on autopilot.
+		:param other: the Platoon instance to be merged into this one
+		:param tm_port: Carla Traffic Manager port if the lead vehicles
+		are on autopilot."""
 		other_follower_controller = copy(other[1].controller)  # copying first followers controller to assign to lead
+		if other[0].autopilot:
+			if tm_port is not None:
+				other[0].set_autopilot(False, tm_port)
+			else:
+				raise Exception("The lead vehicle of the other platoon is on autopilot, but tm_port is unspecified.")
+
 		other_follower_controller.vehicle = other[0]
 		other[0].attach_controller(other_follower_controller)
 		self.follower_vehicles.append(other[0])
@@ -178,42 +272,74 @@ class Platoon:
 
 
 class Vehicle:
-	"""Represents a vehicle in the simulation. Spawns a carla vehicle at init and has additional features.
-	The underlying carla Actor instance can be accessed directly."""
-	def __init__(self, blueprint, spawn_point, world, index, history_depth=0, history_data=None):
+	"""
+	Vehicle represents a vehicle in the simulation.
+	It should be initialised by the add_follower_vehicle or add_lead_vehicle
+	method of a Platoon instances and spawns a carla vehicle with added
+	features.
+	If it represents the lead vehicle, it can either be controlled by
+	autopilot or a LeadNavigator instance (or a custom method, e.g. based
+	on LowLevelController).
+	All attribute and method calls that do not correspond to added
+	platooning-specific features are passed on to the underlying carla.Vehicle
+	instance.
+	"""
+	def __init__(self, blueprint, spawn_point, world, index):
+		"""
+		:param blueprint: carla.ActorBlueprint for the new vehicle
+		:param spawn_point: carla.Transform where the new vehicle is spawned
+		:param world: carla.World in which the simulation takes place
+		:param index: vehicle index in the platoon, 0 is the lead vehicle
+		"""
+
 		self.blueprint = blueprint
+		self.blueprint.set_attribute('role_name', 'hero')
 		self.spawn_point = spawn_point
 		self.world = world
+		self.map = self.world.get_map()
 		self._carla_vehicle = world.spawn_actor(blueprint, spawn_point)
 		self.index = index
 		self.controller = None
-		self.history = VehicleHistory(history_depth)
-		if history_data is None:
-			self.history_data = []
-		else:
-			self.history_data = history_data
-			for attribute in self.history_data:
-				self.history.add_attribute(attribute)
-
-	def attach_controller(self, controller):
-		self.controller = controller
+		self._autopilot = False
 
 	def __lt__(self, other):
 		return self.index < other.index
 
-	def __getattr__(self, attr):  # makes the underlying carla Actor instance available
-		return getattr(self._carla_vehicle, attr)
-
 	def __str__(self):
 		return f"Follower vehicle {self.index}"
 
+	def __getattr__(self, attr):
+		"""Pass on attribute and method calls to the underlying
+		carla.Vehicle instance"""
+		return getattr(self._carla_vehicle, attr)
+
+	def attach_controller(self, controller):
+		"""Attach a controller (e.g. FollowerController, LeadNavigator)"""
+		self.controller = controller
+
+	def set_autopilot(self, is_autopilot, tm_port):
+		"""Turn on Carla autopilot.
+		:param is_autopilot: True or False for turning autopilot on or off, resp.
+		:param tm_port: the Carla Traffic Manager port"""
+		if isinstance(is_autopilot, bool):
+			self._autopilot = is_autopilot
+			self._carla_vehicle.set_autopilot(is_autopilot, tm_port)
+		else:
+			raise TypeError("Autopilot must be set to True or False")
+
 	@property
-	def speed(self):  # norm of vehicle velocity in m/s
+	def autopilot(self):
+		return self._autopilot
+
+	@property
+	def speed(self):
+		"""Norm of velocity in m/s"""
 		v = self._carla_vehicle.get_velocity()
 		return np.sqrt(v.x**2 + v.y**2 + v.z**2)
 
 	@property
-	def acceleration(self):  # signed norm of acceleration in m/s^2
+	def acceleration(self):
+		"""Signed norm of acceleration. Warning: can be inaccurate."""
 		a = self._carla_vehicle.get_acceleration()
 		v = self._carla_vehicle.get_velocity()
 		sign = 1 if a.x * v.x + a.y * v.y >= 0 else -1
@@ -221,30 +347,43 @@ class Vehicle:
 
 	@property
 	def heading(self):
+		"""The angle in which the vehicle is headed in Carla's coordinate
+		system."""
 		transform = self._carla_vehicle.get_transform()
 		return transform.rotation.yaw
 
-	def distance_to(self, other):  # distance to other vehicle
+	def distance_to(self, other):
+		"""Distance to another vehicle.
+		:param other: the other vehicle."""
 		location = self._carla_vehicle.get_location()
 		other_location = other.get_location()
 		return location.distance(other_location)
 
 	def control(self, lead_waypoints):
+		"""For a follower vehicle, this method applies one control step.
+		:param lead_waypoints: saved waypoints of the lead vehicle,
+		this vehicle will try to follow the same spatial trajectory."""
 		self.apply_control(self.controller.compute_control(lead_waypoints, self.index))
 
-	def update_history(self):
-		for attribute in self.history_data:
-			self.history[attribute] = getattr(self, attribute)
-		# todo: this is limited to variables, cannot access method return values
+	def transform_ahead(self, distance, force_straight=False):
+		"""Return a carla.Transform ahead (or behind with a negative distance)
+		of the vehicle.
+		:param distance: distance in meters
+		:param force_straight: if True, return a point on a straight line ahead,
+		if false, follow the road"""
+		ego_transform = self.get_transform()
+		if force_straight:
+			x = ego_transform.location.x
+			y = ego_transform.location.y
+			z = ego_transform.location.z
+			pitch = np.deg2rad(ego_transform.rotation.pitch)
+			yaw = np.deg2rad(ego_transform.rotation.yaw)
 
+			x = x + np.cos(yaw) * np.cos(pitch) * distance
+			y = y + np.sin(yaw) * np.cos(pitch) * distance
+			z = z + np.sin(pitch) * distance
 
-class VehicleHistory:
-	def __init__(self, depth=0):
-		self.depth = depth
-
-	def add_attribute(self, attribute_name):
-		setattr(self, attribute_name, deque(maxlen=self.depth))
-
-	def __setitem__(self, key, value):
-		getattr(self, key).append(value)
-
+			return carla.Transform(carla.Location(x=x, y=y, z=z), ego_transform.rotation)
+		else:
+			ego_wpt = self.map.get_waypoint(ego_transform.location)
+			return ego_wpt.next(distance).transform
