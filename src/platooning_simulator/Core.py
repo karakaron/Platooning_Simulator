@@ -183,7 +183,6 @@ class Platoon:
 		for vehicle in self.follower_vehicles:
 			try:
 				vehicle.control(self.lead_waypoints)
-				vehicle.update_history()
 			except Exception as e:
 				warnings.warn(f"{e}, follower vehicle {vehicle.index}")
 
