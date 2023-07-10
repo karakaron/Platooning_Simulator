@@ -94,6 +94,9 @@ class Simulation(carla.Client):
 		_settings.synchronous_mode = False
 		self.world.apply_settings(_settings)
 
+	def tick(self):
+		self.world.tick()
+
 
 class Platoon:
 	"""
@@ -385,4 +388,7 @@ class Vehicle:
 			return carla.Transform(carla.Location(x=x, y=y, z=z), ego_transform.rotation)
 		else:
 			ego_wpt = self.map.get_waypoint(ego_transform.location)
-			return ego_wpt.next(distance).transform
+			if distance > 0:
+				return ego_wpt.next(distance)[0].transform
+			else:
+				return ego_wpt.previous(-1*distance)[0].transform
