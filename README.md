@@ -19,4 +19,4 @@ With that, the modules can be imported as
 from PlatooningSimulator import Core, PlatooningControllers
 ````
 
-See the examples library on how to run a simulation.
+See the examples library on how to run a simulation, and see the [Documentation](https://github.com/karakaron/Platooning_Simulator/wiki/Documentation) for more information.
