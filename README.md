@@ -2,7 +2,7 @@
 
 This project is a small driving simulator built on top of Carla. It aims to provide a simple way to validate control strategies of autonomous vehicle platoons in highly detailed simulations. It has been developed by Aron Karakai at the University of Groningen (Groningen, The Netherlands), supervised by Prof. dr. ir. Bart Besselink (Bernoulli Institute for Mathematics, Computer Science and Artificial Intelligence, Groningen, The Netherlands).
 
-The accompanying research paper is available [here](http://dx.doi.org/10.13140/RG.2.2.31833.08802).
+The accompanying research paper is available [here](http://dx.doi.org/10.13140/RG.2.2.31833.08802/1).
 
 For questions, suggestions, or feature requests, please send an email to a.karakai [at] student.rug.nl.
 
