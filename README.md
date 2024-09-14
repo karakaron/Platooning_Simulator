@@ -4,7 +4,7 @@ This project is a small driving simulator built on top of Carla. It aims to prov
 
 The accompanying research paper is available [here](http://dx.doi.org/10.13140/RG.2.2.31833.08802/1).
 
-For questions, suggestions, or feature requests, please send an email to a.karakai [at] student.rug.nl.
+For questions, suggestions, or feature requests, please send an email to akarakai [at] ethz.ch.
 
 ## Getting Started
 
